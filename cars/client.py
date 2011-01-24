@@ -17,19 +17,19 @@ class TrafficClient(object):
     Constructor
     """
     # init logging facility: log to client.log
-    logging.basicConfig(filename='client.log', level=logging.DEBUG)
+    logging.basicConfig(filename='client.log', level=logging.DEBUG, filemode='w+')
+    logging.debug('Traffic client init')
     # init deferred object to handle callbacks and failures
-    d = defer.Deferred()
+    self.deferred = defer.Deferred()
     # init factory to create TrafficProtocol protocol instances
-    self.factory = TrafficClientFactory(d)
+    self.factory = TrafficClientFactory(self.deferred)
     # list of cars
     self.cars = []
     # keep track of servers replying so we know when the overall work
     # is finished
     self.addr_count = 0
     # list of servers to get cars list from
-    self.addresses = [('localhost', 8000)]
-    logging.debug('init traffic client')
+    self.addresses = [('localhost', 8000), ('localhost', 8000)]
  
   def get_cars(self, host, port):
     """
@@ -38,9 +38,8 @@ class TrafficClient(object):
     @param host server's hostname
     @param port server's port
     """
-    d = defer.Deferred()
+    logging.debug('Get cars: %s - %d' % (host, port))
     reactor.connectTCP(host, port, self.factory)
-    return d
 
   def got_cars(self, cars):
     """
@@ -48,10 +47,8 @@ class TrafficClient(object):
 
     @param cars data returned by server
     """
-    logging.debug('cars received: %s' % cars)
-    # data is received using form: 'time:brand:color.time:brand:color...'
-    for c in cars.split('.'):
-      self.cars.append(c)
+    logging.debug('Got cars: %s' % cars)
+    self.cars.extend(cars)
 
   def get_cars_failed(self, err):
     """
@@ -59,28 +56,29 @@ class TrafficClient(object):
 
     @param err server error
     """
-    logging.debug('get cars failed: %s' % err)
+    logging.debug('Get cars failed: %s' % err)
 
-  def cars_done(self):
+  def cars_done(self, cars):
     """
     Callback when retrieval operation is finished for all servers.
-    Log cars list and stop Twitsed reactor loop which is listening to events
+    Log cars list and stop Twisted reactor loop which is listening to events
     """
-    if self.addr_count == len(addresses):
-      logging.debug('cars done: %s' % self.cars)
+    self.addr_count += 1
+    if self.addr_count == len(self.addresses):
+      logging.debug('Cars done: %s' % self.cars)
       reactor.stop()
-      self.addr_count = 0
 
   def update_cars(self):
     """
     Retrieve list of cars from all servers. Set callbacks to handle
     success and failure.
     """
+    logging.debug('Update cars')
     for address in self.addresses:
       host, port = address
-      d = self.get_cars(host, port)
-      d.addCallbacks(self.got_cars, self.get_cars_failed)
-      d.addBoth(self.cars_done)
+      self.get_cars(host, port)
+      self.deferred.addCallbacks(self.got_cars, self.get_cars_failed)
+      self.deferred.addBoth(self.cars_done)
 
 class TrafficProtocol(Protocol):
   """
@@ -95,7 +93,7 @@ class TrafficProtocol(Protocol):
 
     @param data data received from server
     """
-    logging.debug('data received: %s' % data)
+    logging.debug('Data received: %s' % data)
     self.data += data
 
   def connectionLost(self, reason):
@@ -105,10 +103,10 @@ class TrafficProtocol(Protocol):
 
     @param reason failure object
     """
-    logging.debug('connection lost: %s' % reason)
+    logging.debug('Connection lost: %s' % reason)
     self.cars = []
     for c in self.data.split('.'):
-      self.cars.append('%s:%s:%s' % (c[0], c[1], c[2]))
+      self.cars.append(c)
     self.carsReceived(self.cars)
 
   def carsReceived(self, cars):
@@ -117,6 +115,7 @@ class TrafficProtocol(Protocol):
 
     @param cars data received from the server
     """
+    logging.debug('Cars received: %s' % cars)
     self.factory.get_cars_finished(cars)
 
 
@@ -133,6 +132,7 @@ class TrafficClientFactory(ClientFactory):
 
     @param deferred callbacks to handle completion and failures
     """
+    logging.debug('Traffic client factory init: %s', deferred)
     self.deferred = deferred
 
   def get_cars_finished(self, cars):
@@ -141,6 +141,7 @@ class TrafficClientFactory(ClientFactory):
 
     @param cars data received from the server
     """
+    logging.debug('Get cars finished: %s', cars)
     if self.deferred:
       d, self.deferred = self.deferred, None
       d.callback(cars)
@@ -152,6 +153,7 @@ class TrafficClientFactory(ClientFactory):
     @param connector connection object.
     @param reason failure object
     """
+    logging.debug('Client connection failed: %s - %s' % (connector, reason))
     if self.deferred:
       d, self.deferred = self.deferred, None
       d.errback(reason)
@@ -159,7 +161,6 @@ class TrafficClientFactory(ClientFactory):
 def main():
   client = TrafficClient()
   client.update_cars()
-
   reactor.run()
 
 if __name__ == '__main__':

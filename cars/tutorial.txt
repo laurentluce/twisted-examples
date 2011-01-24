@@ -1,4 +1,4 @@
-This article describes how to use Twisted to build a client-server cars monitoring system. It focuses mainly on Twisted.
+This article describes how to use Twisted to build a client/server cars monitoring system. We are going to focus on the client/server communication.
 
 The client and server source code can be retrieved using Git:
 [code lang="bash"]
@@ -10,6 +10,8 @@ git clone https://github.com/laurentluce/twisted-examples.git
 Some researchers invented a system capable of monitoring cars and detecting the brand and color of a car. We are in charge of building a client/server software solution to retrieve the list of cars from different monitoring locations.
 
 First element is a server used to monitor the cars and listen for clients connections to reply with the list of cars. Second element is the client retrieving the list of cars from the servers. We will use the Deferred feature to handle completion and failures callbacks.
+
+<img src="/images/blog/twisted/overview.png">
 
 Twisted is an asynchronous networking framework. It uses an event loop called the reactor. When this loop detects an event, it uses callbacks to report those events. Events include: connection made, data received, connection lost...
 
@@ -42,7 +44,7 @@ class TrafficServer(object):
     # cars list
     self.cars = []
     # server listening interface
-    self.interface = 'localhost'
+    self.interface = 'server1.monitoring.com'
     # server port number
     self.port = 8000
     # Factory class for connections
@@ -91,13 +93,17 @@ class TrafficProtocol(Protocol):
     Callback when a connection is made. Write cars data to the client then
     close the connection.
     """
-    logging.debug('connection made')
+    logging.debug('Connection made')
     data = '.'.join(self.factory.cars)
     self.transport.write(data)
     self.transport.loseConnection()
 [/code]
 
-The WatchCars thread watches for new cars and append them to the cars list. Assume that get_next_car() is a blocking call returning the car one by one.
+Here is the flow on the server side:
+
+<img src="/images/blog/twisted/server.png">
+
+The WatchCars thread watches for new cars and append them to the cars list. Assume that get_next_car() is a blocking call returning the cars one by one.
  
 [code lang="python"]
 class WatchCars(Thread):
@@ -119,10 +125,8 @@ class WatchCars(Thread):
     Thread run. Get new cars and add them to the cars list.
     """
     while True:
-      time, brand, color = get_next_car()
-      t, brand, color = 'today', 'peugeot', 'red'
+      t, brand, color = get_next_car()
       self.cars.append('%s:%s:%s' % (t, brand, color))
-
 [/code]
 
 Finally, we have a simple main() function creating an instance of the server and starting the reactor loop.
@@ -136,16 +140,31 @@ if __name__ == '__main__':
   main()
 [/code]
 
+Let's start the server alone (server.py) and look at the logging output:
+
+[code lang="bash"]
+python server.py &
+
+cat server.log
+DEBUG:root:Traffic server init
+DEBUG:root:Traffic factory init
+DEBUG:root:Watch cars thread init
+DEBUG:root:Watch cars thread run
+DEBUG:root:Traffic server listen
+[/code]
+
+We can see the server initializing the factory to instantiate protocol objects each time a connection is made. The server is listening for connections from the client.
+ 
 <h2>Client</h2>
 
-The client retrieves the list of cars from the different servers. In our example, we only have one server but you can add more to the addresses list.
+The client retrieves the list of cars from the different servers.
 
 First is our client class doing the following:
 
 <ul>
 <li>Logging facility initialization.</li>
 <li>Initialize the Deferred object to handle callbacks and failures.</li>
-<li>Create a client protocol factory. This factory produces instances of our traffic protocol each time a connection is made.</li>
+<li>Create a client protocol factory. This factory produces instances of our protocol each time a connection is made.</li>
 <li>Cars list initialization.</li>
 <li>Servers addresses list initialization.</li>
 </ul>
@@ -162,7 +181,7 @@ class TrafficClient(object):
     # init logging facility: log to client.log
     logging.basicConfig(filename='client.log', level=logging.DEBUG)
     # init deferred object to handle callbacks and failures
-    d = defer.Deferred()
+    self.deferred = defer.Deferred()
     # init factory to create protocol instances
     self.factory = TrafficClientFactory(d)
     # list of cars
@@ -171,8 +190,8 @@ class TrafficClient(object):
     # is finished
     self.addr_count = 0
     # list of servers to get cars list from
-    self.addresses = [('localhost', 8000)]
-    logging.debug('init traffic client')
+    self.addresses = [('server1.monitoring.com', 8000), ('server2.monitoring.com', 8000)]
+    logging.debug('Init traffic client')
   ... 
 [/code]
 
@@ -188,13 +207,11 @@ First is get_cars() which retrieves the list of cars from a server. It uses the 
     @param host server's hostname
     @param port server's port
     """
-    d = defer.Deferred()
     reactor.connectTCP(host, port, self.factory)
-    return d
 
 [/code]
 
-Next is the main loop used to retrieve the list of cars from all the servers. We also register callbacks for when the list is returned and also to support errors. The addCallbacks() method allow us to specify both. We also register a done method to be called no matter what happens. We are going to see those callback methods next.
+Next is the main loop used to retrieve the list of cars from all the servers. We also register callbacks for when the list is returned and also to handle errors. The addCallbacks() method allow us to specify both. We also register a done method to be called no matter what happens. We are going to see those callback methods next.
 
 [code lang="python"]
   def update_cars(self):
@@ -204,9 +221,9 @@ Next is the main loop used to retrieve the list of cars from all the servers. We
     """
     for address in self.addresses:
       host, port = address
-      d = self.get_cars(host, port)
-      d.addCallbacks(self.got_cars, self.get_cars_failed)
-      d.addBoth(self.cars_done)
+      self.get_cars(host, port)
+      self.deferred.addCallbacks(self.got_cars, self.get_cars_failed)
+      self.deferred.addBoth(self.cars_done)
 [/code]
 
 The method got_cars() is called when we are done receiving the data from the server. It is called by the protocol instance handling the data between the client and the server. We are going to see the factory and the protocol classes later.
@@ -218,10 +235,8 @@ The method got_cars() is called when we are done receiving the data from the ser
 
     @param cars data returned by server
     """
-    logging.debug('cars received: %s' % cars)
-    # data is received using form: 'time:brand:color.time:brand:color...'
-    for c in cars.split('.'):
-      self.cars.append(c)
+    logging.debug('Got cars: %s' % cars)
+    self.cars.extend(cars)
 [/code]
 
 The method get_cars_failed() is called when an error happens in the reactor loop.
@@ -233,7 +248,7 @@ The method get_cars_failed() is called when an error happens in the reactor loop
 
     @param err server error
     """
-    logging.debug('get cars failed: %s' % err)
+    logging.debug('Get cars failed: %s' % err)
 [/code]
 
 The method cars_done() is called when all servers cars list have been retrieved. We also tell the reactor to stop.
@@ -244,10 +259,10 @@ The method cars_done() is called when all servers cars list have been retrieved.
     Callback when retrieval operation is finished for all servers.
     Log cars list and stop Twisted reactor loop which is listening to events
     """
+    self.addr_count += 1
     if self.addr_count == len(addresses):
-      logging.debug('cars done: %s' % self.cars)
+      logging.debug('Cars done: %s' % self.cars)
       reactor.stop()
-      self.addr_count = 0
 [/code]
 
 Next is our protocol class to handle the data between the client and the server. We need to specify a method to be called when some data is received. We also specify a method to be called when the connection is lost. This happens normally when the server closes the connection after sending the list of cars.
@@ -266,7 +281,7 @@ class TrafficProtocol(Protocol):
 
     @param data data received from server
     """
-    logging.debug('data received: %s' % data)
+    logging.debug('Data received: %s' % data)
     self.data += data
 
   def connectionLost(self, reason):
@@ -276,10 +291,10 @@ class TrafficProtocol(Protocol):
 
     @param reason failure object
     """
-    logging.debug('connection lost: %s' % reason)
+    logging.debug('Connection lost: %s' % reason)
     self.cars = []
     for c in self.data.split('.'):
-      self.cars.append('%s:%s:%s' % (c[0], c[1], c[2]))
+      self.cars.append(c)
     self.carsReceived(self.cars)
 
   def carsReceived(self, cars):
@@ -291,7 +306,7 @@ class TrafficProtocol(Protocol):
     self.factory.get_cars_finished(cars)
 [/code]
 
-We need to create a factory class to produce protocol instances. The method get_cars_finished() is called by the protocol instance when the connection is lost with the server. We also define clientConnectionFailed() to handle connection errors.
+We need to create a factory class to produce protocol instances. The method get_cars_finished() is called by the protocol instance when the connection is lost with the server. We also define clientConnectionFailed() to handle connection errors. Note how we use the deferred callbacks methods registered by the client class.
 
 [code lang="python"]
 class TrafficClientFactory(ClientFactory):
@@ -331,7 +346,11 @@ class TrafficClientFactory(ClientFactory):
       d.errback(reason)
 [/code]
 
-Our simple main() function instantiates a client object and starts the reactor loop retrieving the cars data from the servers.
+Here is the flow on the client side:
+
+<img src="/images/blog/twisted/client.png">
+
+Our simple main() function instantiates a client object and starts the reactor loop.
 
 [code lang="python"]
 def main():
@@ -344,6 +363,73 @@ if __name__ == '__main__':
   main()
 [/code]
 
-This article is going to be updated in the next few days with running examples.
+Let's start the client alone (client.py) and look at the logging output:
 
-Please write a comment if you have any feedback.
+[code lang="bash"]
+python client.py &
+
+cat client.log
+DEBUG:root:Traffic client init
+DEBUG:root:Traffic client factory init: <Deferred at 0x21945a8>
+DEBUG:root:Update cars
+DEBUG:root:Get cars: server1.monitoring.com - 8000
+DEBUG:root:Get cars: server2.monitoring.com - 8000
+DEBUG:root:Client connection failed: <twisted.internet.tcp.Connector instance at 0x2a28638> - [Failure instance: Traceback (failure with no frames): <class 'twisted.internet.error.ConnectionRefusedError'>: Connection was refused by other side: 111: Connection refused.
+]
+DEBUG:root:Get cars failed: [Failure instance: Traceback (failure with no frames): <class 'twisted.internet.error.ConnectionRefusedError'>: Connection was refused by other side: 111: Connection refused.
+]
+DEBUG:root:Client connection failed: <twisted.internet.tcp.Connector instance at 0x2a28668> - [Failure instance: Traceback (failure with no frames): <class 'twisted.internet.error.ConnectionRefusedError'>: Connection was refused by other side: 111: Connection refused.
+]
+DEBUG:root:Get cars failed: [Failure instance: Traceback (failure with no frames): <class 'twisted.internet.error.ConnectionRefusedError'>: Connection was refused by other side: 111: Connection refused.
+]
+DEBUG:root:Cars done: []
+[/code]
+
+The client tries to connect to server1.monitoring.com and server2.monitoring.com. clientConnectionFailed() is called because there is no server listening. This is expected behavior. This results in calling get_cars_failed() followed by cars_done() as it is the callbacks chain we define for the Deferred object.
+
+<h2>Test things</h2>
+
+Let's start 2 servers and 1 client and see what happens:
+
+[code lang="bash"]
+python server.py &
+
+cat server.log
+DEBUG:root:Traffic server init
+DEBUG:root:Traffic factory init
+DEBUG:root:Watch cars thread init
+DEBUG:root:Watch cars thread run
+DEBUG:root:Traffic server listen
+DEBUG:root:Connection made
+[/code]
+
+On the server side, we can see that a connection is made from the client. The server writes data to the client and closes the connection.
+
+[code lang="bash"]
+python client.py &
+
+cat client.log
+DEBUG:root:Traffic client init
+DEBUG:root:Traffic client factory init: <Deferred at 0x24975a8>
+DEBUG:root:Update cars
+DEBUG:root:Get cars: server1.monitoring.com - 8000
+DEBUG:root:Get cars: server2.monitoring.com - 8000
+DEBUG:root:Data received: 97264836:peugeot:red
+DEBUG:root:Connection lost: [Failure instance: Traceback (failure with no frames): <class 'twisted.internet.error.ConnectionDone'>: Connection was closed cleanly.
+]
+DEBUG:root:Cars received: ['97264836:peugeot:red']
+DEBUG:root:Get cars finished: ['97264836:peugeot:red']
+DEBUG:root:Got cars: ['97264836:peugeot:red']
+DEBUG:root:Cars done: ['97264836:peugeot:red', '97264846:renault:green']
+DEBUG:root:Data received: 97264836:renault:green
+DEBUG:root:Connection lost: [Failure instance: Traceback (failure with no frames): <class 'twisted.internet.error.ConnectionDone'>: Connection was closed cleanly.
+]
+DEBUG:root:Cars received: ['97264846:renault:green']
+DEBUG:root:Get cars finished: ['97264846:renault:green']
+DEBUG:root:Got cars: ['97264846:renault:green']
+DEBUG:root:Cars done: ['97264836:peugeot:red', '97264846:renault:green']
+[/code]
+
+On the client side, 2 connections are made. 1 to server1.monitoring.com and 1 to server2.monitoring.com. '97264836:peugeot:red' is received from server1 and '97264846:renault:green' is received from server2.
+
+That's it for now. I hope you enjoyed this article. Please write a comment if you have any feedback.

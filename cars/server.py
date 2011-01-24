@@ -15,7 +15,8 @@ class TrafficServer(object):
     Constructor
     """
     # init logging facility: log to client.log
-    logging.basicConfig(filename='server.log', level=logging.DEBUG)
+    logging.basicConfig(filename='server.log', level=logging.DEBUG, filemode='w+')
+    logging.debug('Traffic server init')
     # cars list
     self.cars = []
     # server listening interface
@@ -32,6 +33,7 @@ class TrafficServer(object):
     """
     Call reactor's listen to listen for client's connections
     """
+    logging.debug('Traffic server listen')
     port = reactor.listenTCP(self.port or 0, self.factory, interface=self.interface)
 
 class TrafficProtocol(Protocol):
@@ -44,7 +46,7 @@ class TrafficProtocol(Protocol):
     Callback when a connection is made. Write cars data to the client then
     claose the connection.
     """
-    logging.debug('connection made')
+    logging.debug('Connection made')
     data = '.'.join(self.factory.cars)
     self.transport.write(data)
     self.transport.loseConnection()
@@ -76,6 +78,7 @@ class WatchCars(Thread):
 
     @param cars cars list
     """
+    logging.debug('Watch cars thread init')
     Thread.__init__(self)
     self.cars = cars
   
@@ -83,11 +86,12 @@ class WatchCars(Thread):
     """
     Thread run. Get new cars and add them to the cars list.
     """
+    logging.debug('Watch cars thread run')
     while True:
       #time, brand, color = get_next_car()
       t, brand, color = 'today', 'peugeot', 'red'
       self.cars.append('%s:%s:%s' % (t, brand, color))
-      #time.sleep(60)
+      time.sleep(60)
 
 
 def main():
